@@ -8,7 +8,7 @@ import io
 
 app = Flask(__name__)
 
-# โหลด modelsaudio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model.tflite')
+audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
