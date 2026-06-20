@@ -1,4 +1,4 @@
-setuptools>=68.0.0
+setuptools==70.0.0
 flask==3.0.0
 numpy==1.26.4
 opencv-python-headless==4.8.0.76
