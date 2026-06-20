@@ -19,7 +19,7 @@ CLASSES = ['ขนุนดิบ', 'ขนุนสุก']
 
 # --- Audio Processing ---
 SAMPLE_RATE = 16000
-DURATION    = 0.3
+DURATION    = 1.0
 N_MFCC      = 40
 N_FFT       = 320
 HOP_LENGTH  = 160
