@@ -3,13 +3,12 @@ import numpy as np
 import cv2
 import librosa
 import joblib
-import tflite_runtime.interpreter as tflite
+import tensorflow as tf
 import io
 
 app = Flask(__name__)
 
-# โหลด models
-audio_interpreter = tflite.Interpreter(model_path='jackfruit_model.tflite')
+# โหลด modelsaudio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
