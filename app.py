@@ -45,9 +45,11 @@ def predict_audio(audio_bytes):
     audio_interpreter.set_tensor(audio_input[0]['index'], mfcc)
     audio_interpreter.invoke()
     result = audio_interpreter.get_tensor(audio_output[0]['index'])[0]
-    print(f"AUDIO OUTPUT SHAPE: {result.shape}, DTYPE: {result.dtype}, VALUE: {result}", flush=True)
-    return result  # array of probabilities
-
+    # โมเดล output เป็น sigmoid ค่าเดียว สมมติว่าคือ P(ขนุนสุก) ก่อน
+    p_suk = float(result[0])
+    p_dib = 1.0 - p_suk
+    print(f"AUDIO RAW: {result}, P(สุก)={p_suk:.3f}, P(ดิบ)={p_dib:.3f}", flush=True)
+    return np.array([p_dib, p_suk], dtype=np.float32)
 # --- Image Processing ---
 def white_balance(img):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
