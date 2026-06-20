@@ -27,17 +27,18 @@ N_FRAMES    = 100
 
 def extract_mfcc(audio_bytes):
     y, sr = librosa.load(io.BytesIO(audio_bytes), sr=SAMPLE_RATE, duration=DURATION)
+    print(f"AUDIO LOADED: len={len(y)}, sr={sr}, min={y.min():.4f}, max={y.max():.4f}, mean_abs={np.abs(y).mean():.4f}", flush=True)
     if len(y) < int(SAMPLE_RATE * DURATION):
         y = np.pad(y, (0, int(SAMPLE_RATE * DURATION) - len(y)))
     mfcc = librosa.feature.mfcc(
         y=y, sr=sr, n_mfcc=N_MFCC,
         n_fft=N_FFT, hop_length=HOP_LENGTH
     )
-    # บังคับให้ความยาว (มิติเวลา) เท่ากับ N_FRAMES เป๊ะ
     if mfcc.shape[1] < N_FRAMES:
         mfcc = np.pad(mfcc, ((0, 0), (0, N_FRAMES - mfcc.shape[1])))
     else:
         mfcc = mfcc[:, :N_FRAMES]
+    print(f"MFCC STATS: shape={mfcc.shape}, min={mfcc.min():.4f}, max={mfcc.max():.4f}, mean={mfcc.mean():.4f}", flush=True)
     return mfcc[np.newaxis, ..., np.newaxis].astype(np.float32)
 
 def predict_audio(audio_bytes):
