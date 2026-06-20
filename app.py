@@ -45,6 +45,7 @@ def predict_audio(audio_bytes):
     audio_interpreter.set_tensor(audio_input[0]['index'], mfcc)
     audio_interpreter.invoke()
     result = audio_interpreter.get_tensor(audio_output[0]['index'])[0]
+    print(f"AUDIO OUTPUT SHAPE: {result.shape}, DTYPE: {result.dtype}, VALUE: {result}", flush=True)
     return result  # array of probabilities
 
 # --- Image Processing ---
