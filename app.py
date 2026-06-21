@@ -51,6 +51,7 @@ def predict_audio(audio_bytes):
     p_dib = 1.0 - p_suk
     print(f"AUDIO RAW: {result}, P(สุก)={p_suk:.3f}, P(ดิบ)={p_dib:.3f}", flush=True)
     return np.array([p_dib, p_suk], dtype=np.float32)
+
 # --- Image Processing ---
 def white_balance(img):
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -63,6 +64,13 @@ def white_balance(img):
 def extract_surface_features(img_bytes):
     nparr = np.frombuffer(img_bytes, np.uint8)
     img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+    # ป้องกัน worker crash: ถ้า decode ไม่สำเร็จ cv2.imdecode จะคืน None
+    # การส่ง None เข้า cv2.resize ทำให้ OpenCV segfault ที่ระดับ C++
+    # ซึ่ง Python try/except จับไม่ได้ และพา worker process ทั้งตัวล้มไปด้วย
+    if img is None:
+        raise ValueError("ไม่สามารถอ่านไฟล์รูปภาพได้ (รูปอาจเสียหายหรือเป็นไฟล์ฟอร์แมตที่ไม่รองรับ)")
+
     img   = cv2.resize(img, (224, 224))
     img   = white_balance(img)
 
@@ -112,40 +120,52 @@ def predict():
     if 'audio' not in request.files or 'image' not in request.files:
         return jsonify({'error': 'ต้องส่งทั้ง audio และ image'}), 400
 
-    audio_bytes = request.files['audio'].read()
-    image_bytes = request.files['image'].read()
+    try:
+        audio_bytes = request.files['audio'].read()
+        image_bytes = request.files['image'].read()
 
-    audio_proba = predict_audio(audio_bytes)
-    image_proba = predict_image(image_bytes)
-    result      = fuse_predictions(audio_proba, image_proba)
+        audio_proba = predict_audio(audio_bytes)
+        image_proba = predict_image(image_bytes)
+        result      = fuse_predictions(audio_proba, image_proba)
 
-    return jsonify(result)
+        return jsonify(result)
+    except Exception as e:
+        print(f"PREDICT ERROR: {e}", flush=True)
+        return jsonify({'error': f'ประมวลผลไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/predict/audio', methods=['POST'])
 def predict_audio_only():
     if 'audio' not in request.files:
         return jsonify({'error': 'ต้องส่ง audio'}), 400
-    audio_bytes = request.files['audio'].read()
-    proba       = predict_audio(audio_bytes)
-    pred_idx    = int(np.argmax(proba))
-    return jsonify({
-        'result':     CLASSES[pred_idx],
-        'confidence': round(float(proba[pred_idx]) * 100, 1),
-        'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
-    })
+    try:
+        audio_bytes = request.files['audio'].read()
+        proba       = predict_audio(audio_bytes)
+        pred_idx    = int(np.argmax(proba))
+        return jsonify({
+            'result':     CLASSES[pred_idx],
+            'confidence': round(float(proba[pred_idx]) * 100, 1),
+            'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
+        })
+    except Exception as e:
+        print(f"AUDIO PREDICT ERROR: {e}", flush=True)
+        return jsonify({'error': f'ประมวลผลเสียงไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/predict/image', methods=['POST'])
 def predict_image_only():
     if 'image' not in request.files:
         return jsonify({'error': 'ต้องส่ง image'}), 400
-    image_bytes = request.files['image'].read()
-    proba       = predict_image(image_bytes)
-    pred_idx    = int(np.argmax(proba))
-    return jsonify({
-        'result':     CLASSES[pred_idx],
-        'confidence': round(float(proba[pred_idx]) * 100, 1),
-        'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
-    })
+    try:
+        image_bytes = request.files['image'].read()
+        proba       = predict_image(image_bytes)
+        pred_idx    = int(np.argmax(proba))
+        return jsonify({
+            'result':     CLASSES[pred_idx],
+            'confidence': round(float(proba[pred_idx]) * 100, 1),
+            'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
+        })
+    except Exception as e:
+        print(f"IMAGE PREDICT ERROR: {e}", flush=True)
+        return jsonify({'error': f'ประมวลผลรูปภาพไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
@@ -164,5 +184,6 @@ def chat():
     except Exception as e:
         print(f"CHAT ERROR: {e}", flush=True)
         return jsonify({'error': f'เกิดข้อผิดพลาด: {str(e)}'}), 500
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
