@@ -11,7 +11,7 @@ import google.generativeai as genai
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
-    chat_model = genai.GenerativeModel('gemini-1.5-flash')
+    chat_model = genai.GenerativeModel('gemini-2.5-flash')
 else:
     chat_model = None
     print("WARNING: GEMINI_API_KEY not set", flush=True)
