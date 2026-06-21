@@ -6,6 +6,7 @@ import joblib
 import tensorflow as tf
 import io
 import os
+import gc
 import google.generativeai as genai
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
@@ -18,20 +19,24 @@ else:
 
 app = Flask(__name__)
 
+# โหลด models ครั้งเดียวตอน startup
+print("Loading TensorFlow Lite model...", flush=True)
 audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
 
+print("Loading surface classifier...", flush=True)
 surface_clf = joblib.load('surface_classifier.pkl')
+print("All models loaded.", flush=True)
 
 CLASSES = ['ขนุนดิบ', 'ขนุนสุก']
 
-# --- Audio Processing ---
-SAMPLE_RATE = 22050  # ต้องตรงกับตอนเทรน!
+SAMPLE_RATE = 22050
 N_MFCC      = 40
-N_FRAMES    = 100    # ใช้ pad/truncate แทน DURATION
+N_FRAMES    = 100
 
+# --- Audio Processing ---
 def extract_mfcc(audio_bytes):
     y, sr = librosa.load(io.BytesIO(audio_bytes), sr=SAMPLE_RATE)
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
@@ -39,17 +44,22 @@ def extract_mfcc(audio_bytes):
         mfcc = np.pad(mfcc, ((0, 0), (0, N_FRAMES - mfcc.shape[1])))
     else:
         mfcc = mfcc[:, :N_FRAMES]
-    return mfcc[np.newaxis, ..., np.newaxis].astype(np.float32)
+    result = mfcc[np.newaxis, ..., np.newaxis].astype(np.float32)
+    # คืน memory ของ audio array
+    del y, mfcc
+    gc.collect()
+    return result
 
 def predict_audio(audio_bytes):
     mfcc = extract_mfcc(audio_bytes)
     audio_interpreter.set_tensor(audio_input[0]['index'], mfcc)
     audio_interpreter.invoke()
     result = audio_interpreter.get_tensor(audio_output[0]['index'])[0]
-    # โมเดล output เป็น sigmoid ค่าเดียว สมมติว่าคือ P(ขนุนสุก) ก่อน
     p_suk = float(result[0])
     p_dib = 1.0 - p_suk
-    print(f"AUDIO RAW: {result}, P(สุก)={p_suk:.3f}, P(ดิบ)={p_dib:.3f}", flush=True)
+    print(f"AUDIO RAW: {result}, P(ดิบ)={p_dib:.3f}, P(สุก)={p_suk:.3f}", flush=True)
+    del mfcc
+    gc.collect()
     return np.array([p_dib, p_suk], dtype=np.float32)
 
 # --- Image Processing ---
@@ -64,22 +74,17 @@ def white_balance(img):
 def extract_surface_features(img_bytes):
     nparr = np.frombuffer(img_bytes, np.uint8)
     img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-    # ป้องกัน worker crash: ถ้า decode ไม่สำเร็จ cv2.imdecode จะคืน None
-    # การส่ง None เข้า cv2.resize ทำให้ OpenCV segfault ที่ระดับ C++
-    # ซึ่ง Python try/except จับไม่ได้ และพา worker process ทั้งตัวล้มไปด้วย
     if img is None:
-        raise ValueError("ไม่สามารถอ่านไฟล์รูปภาพได้ (รูปอาจเสียหายหรือเป็นไฟล์ฟอร์แมตที่ไม่รองรับ)")
-
+        raise ValueError("อ่านไฟล์รูปภาพไม่ได้ (รูปอาจเสียหายหรือ format ไม่รองรับ)")
     img   = cv2.resize(img, (224, 224))
     img   = white_balance(img)
 
     hsv  = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    black_mask  = cv2.inRange(hsv, np.array([0,0,0]),   np.array([180,255,60]))
-    green_mask  = cv2.inRange(hsv, np.array([25,30,30]),np.array([85,255,255]))
-    yellow_mask = cv2.inRange(hsv, np.array([15,30,30]),np.array([35,255,255]))
+    black_mask  = cv2.inRange(hsv, np.array([0,0,0]),    np.array([180,255,60]))
+    green_mask  = cv2.inRange(hsv, np.array([25,30,30]), np.array([85,255,255]))
+    yellow_mask = cv2.inRange(hsv, np.array([15,30,30]), np.array([35,255,255]))
 
     black_ratio  = np.sum(black_mask  > 0) / black_mask.size
     green_ratio  = np.sum(green_mask  > 0) / green_mask.size
@@ -91,13 +96,19 @@ def extract_surface_features(img_bytes):
     spine_count = len([c for c in contours if 10 < cv2.contourArea(c) < 500])
     texture     = gray.std()
 
-    return np.array([[black_ratio, green_ratio, yellow_ratio,
-                      spine_count, texture]], dtype=np.float32)
+    features = np.array([[black_ratio, green_ratio, yellow_ratio,
+                          spine_count, texture]], dtype=np.float32)
+    # คืน memory ของรูป
+    del img, hsv, gray, nparr, black_mask, green_mask, yellow_mask, blurred, edges
+    gc.collect()
+    return features
 
 def predict_image(img_bytes):
     features = extract_surface_features(img_bytes)
     proba    = surface_clf.predict_proba(features)[0]
-    return proba  # array of probabilities
+    del features
+    gc.collect()
+    return proba
 
 # --- Fusion ---
 def fuse_predictions(audio_proba, image_proba, audio_weight=0.6, image_weight=0.4):
@@ -119,18 +130,16 @@ def index():
 def predict():
     if 'audio' not in request.files or 'image' not in request.files:
         return jsonify({'error': 'ต้องส่งทั้ง audio และ image'}), 400
-
     try:
         audio_bytes = request.files['audio'].read()
         image_bytes = request.files['image'].read()
-
         audio_proba = predict_audio(audio_bytes)
         image_proba = predict_image(image_bytes)
         result      = fuse_predictions(audio_proba, image_proba)
-
         return jsonify(result)
     except Exception as e:
         print(f"PREDICT ERROR: {e}", flush=True)
+        gc.collect()
         return jsonify({'error': f'ประมวลผลไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/predict/audio', methods=['POST'])
@@ -147,7 +156,8 @@ def predict_audio_only():
             'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
         })
     except Exception as e:
-        print(f"AUDIO PREDICT ERROR: {e}", flush=True)
+        print(f"AUDIO ERROR: {e}", flush=True)
+        gc.collect()
         return jsonify({'error': f'ประมวลผลเสียงไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/predict/image', methods=['POST'])
@@ -164,22 +174,19 @@ def predict_image_only():
             'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
         })
     except Exception as e:
-        print(f"IMAGE PREDICT ERROR: {e}", flush=True)
+        print(f"IMAGE ERROR: {e}", flush=True)
+        gc.collect()
         return jsonify({'error': f'ประมวลผลรูปภาพไม่สำเร็จ: {str(e)}'}), 500
 
 @app.route('/chat', methods=['POST'])
 def chat():
     if chat_model is None:
         return jsonify({'error': 'Chat AI ยังไม่ได้ตั้งค่าบน server'}), 503
-
     data = request.get_json()
     if not data or 'message' not in data:
         return jsonify({'error': 'ต้องส่ง message'}), 400
-
-    user_message = data['message']
-
     try:
-        response = chat_model.generate_content(user_message)
+        response = chat_model.generate_content(data['message'])
         return jsonify({'reply': response.text})
     except Exception as e:
         print(f"CHAT ERROR: {e}", flush=True)
