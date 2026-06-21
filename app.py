@@ -5,6 +5,16 @@ import librosa
 import joblib
 import tensorflow as tf
 import io
+import os
+import google.generativeai as genai
+
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    chat_model = genai.GenerativeModel('gemini-1.5-flash')
+else:
+    chat_model = None
+    print("WARNING: GEMINI_API_KEY not set", flush=True)
 
 app = Flask(__name__)
 
@@ -137,5 +147,22 @@ def predict_image_only():
         'scores':     {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(proba)}
     })
 
+@app.route('/chat', methods=['POST'])
+def chat():
+    if chat_model is None:
+        return jsonify({'error': 'Chat AI ยังไม่ได้ตั้งค่าบน server'}), 503
+
+    data = request.get_json()
+    if not data or 'message' not in data:
+        return jsonify({'error': 'ต้องส่ง message'}), 400
+
+    user_message = data['message']
+
+    try:
+        response = chat_model.generate_content(user_message)
+        return jsonify({'reply': response.text})
+    except Exception as e:
+        print(f"CHAT ERROR: {e}", flush=True)
+        return jsonify({'error': f'เกิดข้อผิดพลาด: {str(e)}'}), 500
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=False)
