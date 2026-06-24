@@ -45,7 +45,12 @@ N_FRAMES    = 100
 # --- Audio Processing ---
 
 def extract_mfcc(audio_bytes):
-    y, sr = librosa.load(io.BytesIO(audio_bytes), sr=SAMPLE_RATE)
+    y, sr = librosa.load(
+        io.BytesIO(audio_bytes), 
+        sr=SAMPLE_RATE,
+        mono=True,
+        duration=10  # ← จำกัดแค่ 10 วินาทีแรก
+    )
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
     if mfcc.shape[1] < N_FRAMES:
         mfcc = np.pad(mfcc, ((0, 0), (0, N_FRAMES - mfcc.shape[1])))
