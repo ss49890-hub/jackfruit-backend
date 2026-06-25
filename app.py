@@ -1,6 +1,8 @@
 from flask import Flask, request, jsonify
 import numpy as np
 import cv2
+import soundfile as sf
+import scipy.signal as signal
 import librosa
 import tensorflow as tf
 import io
@@ -44,18 +46,27 @@ N_FRAMES    = 100
 # --- Audio Processing ---
 
 def extract_mfcc(audio_bytes):
- y, sr = librosa.load(
-    io.BytesIO(audio_bytes),
-    sr=SAMPLE_RATE,
-    mono=True,
-    duration=10,
-    res_type='kaiser_fast'
-)
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
+    audio_file = io.BytesIO(audio_bytes)
+    y, sr = sf.read(audio_file, dtype='float32')
+
+    if y.ndim > 1:
+        y = y.mean(axis=1)
+
+    if sr != SAMPLE_RATE:
+        n_samples = int(len(y) * SAMPLE_RATE / sr)
+        y = signal.resample(y, n_samples)
+
+    max_samples = SAMPLE_RATE * 10
+    if len(y) > max_samples:
+        y = y[:max_samples]
+
+    mfcc = librosa.feature.mfcc(y=y, sr=SAMPLE_RATE, n_mfcc=N_MFCC)
+
     if mfcc.shape[1] < N_FRAMES:
         mfcc = np.pad(mfcc, ((0, 0), (0, N_FRAMES - mfcc.shape[1])))
     else:
         mfcc = mfcc[:, :N_FRAMES]
+
     result = mfcc[np.newaxis, ..., np.newaxis].astype(np.float32)
     del y, mfcc
     gc.collect()
