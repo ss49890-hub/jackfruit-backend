@@ -22,19 +22,20 @@ app = Flask(__name__)
 
 MODELS_READY = False
 
+# โหลด audio ตอน startup ปกติ
 print("Loading audio TFLite model...", flush=True)
 audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
+print("Audio model loaded.", flush=True)
 
-print("Loading image TFLite model...", flush=True)
-image_interpreter = tf.lite.Interpreter(model_path='jackfruit_image_v2.tflite')
-image_interpreter.allocate_tensors()
-image_input  = image_interpreter.get_input_details()
-image_output = image_interpreter.get_output_details()
+# image model โหลดแบบ lazy (โหลดตอนใช้ครั้งแรกเท่านั้น)
+image_interpreter = None
+image_input = None
+image_output = None
 
-print("All models loaded.", flush=True)
+print("All models ready.", flush=True)
 MODELS_READY = True
 
 CLASSES = ['ขนุนดิบ', 'ขนุนสุก']
@@ -42,6 +43,16 @@ CLASSES = ['ขนุนดิบ', 'ขนุนสุก']
 SAMPLE_RATE = 22050
 N_MFCC      = 40
 N_FRAMES    = 100
+
+def load_image_model():
+    global image_interpreter, image_input, image_output
+    if image_interpreter is None:
+        print("Loading image TFLite model (lazy)...", flush=True)
+        image_interpreter = tf.lite.Interpreter(model_path='jackfruit_image_v2.tflite')
+        image_interpreter.allocate_tensors()
+        image_input  = image_interpreter.get_input_details()
+        image_output = image_interpreter.get_output_details()
+        print("Image model loaded.", flush=True)
 
 # --- Audio Processing ---
 
@@ -87,6 +98,7 @@ def predict_audio(audio_bytes):
 # --- Image Processing ---
 
 def predict_image(img_bytes):
+    load_image_model()  # lazy load ตอนใช้ครั้งแรก
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
