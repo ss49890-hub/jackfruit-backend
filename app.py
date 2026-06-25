@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import numpy as np
 import cv2
 import librosa
-import joblib
 import tensorflow as tf
 import io
 import os
@@ -19,21 +18,21 @@ else:
 
 app = Flask(__name__)
 
-# โหลด models ครั้งเดียวตอน startup
-# ตัวแปร flag นี้จะเป็น True ก็ต่อเมื่อโมเดลทั้งหมดโหลดเข้า memory เสร็จสมบูรณ์แล้วจริงๆ
-# ใช้เช็คผ่าน /health endpoint เพื่อให้แอพมือถือรอจน server พร้อมจริง ไม่ใช่แค่ "ตอบ request ได้"
 MODELS_READY = False
 
-print("Loading TensorFlow Lite model...", flush=True)
+print("Loading audio TFLite model...", flush=True)
 audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
 
-print("Loading surface classifier...", flush=True)
-surface_clf = joblib.load('surface_classifier.pkl')
-print("All models loaded.", flush=True)
+print("Loading image TFLite model...", flush=True)
+image_interpreter = tf.lite.Interpreter(model_path='jackfruit_image_v2.tflite')
+image_interpreter.allocate_tensors()
+image_input  = image_interpreter.get_input_details()
+image_output = image_interpreter.get_output_details()
 
+print("All models loaded.", flush=True)
 MODELS_READY = True
 
 CLASSES = ['ขนุนดิบ', 'ขนุนสุก']
@@ -46,10 +45,10 @@ N_FRAMES    = 100
 
 def extract_mfcc(audio_bytes):
     y, sr = librosa.load(
-        io.BytesIO(audio_bytes), 
+        io.BytesIO(audio_bytes),
         sr=SAMPLE_RATE,
         mono=True,
-        duration=10  # ← จำกัดแค่ 10 วินาทีแรก
+        duration=10
     )
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=N_MFCC)
     if mfcc.shape[1] < N_FRAMES:
@@ -75,51 +74,24 @@ def predict_audio(audio_bytes):
 
 # --- Image Processing ---
 
-def white_balance(img):
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
-    l, a, b = cv2.split(lab)
-    a = np.clip(a - (np.mean(a) - 128), 0, 255)
-    b = np.clip(b - (np.mean(b) - 128), 0, 255)
-    balanced = cv2.merge([l, a, b]).astype(np.uint8)
-    return cv2.cvtColor(balanced, cv2.COLOR_LAB2BGR)
-
-def extract_surface_features(img_bytes):
+def predict_image(img_bytes):
     nparr = np.frombuffer(img_bytes, np.uint8)
-    img   = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
         raise ValueError("อ่านไฟล์รูปภาพไม่ได้ (รูปอาจเสียหายหรือ format ไม่รองรับ)")
-    img   = cv2.resize(img, (224, 224))
-    img   = white_balance(img)
-
-    hsv  = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    black_mask  = cv2.inRange(hsv, np.array([0,0,0]),    np.array([180,255,60]))
-    green_mask  = cv2.inRange(hsv, np.array([25,30,30]), np.array([85,255,255]))
-    yellow_mask = cv2.inRange(hsv, np.array([15,30,30]), np.array([35,255,255]))
-
-    black_ratio  = np.sum(black_mask  > 0) / black_mask.size
-    green_ratio  = np.sum(green_mask  > 0) / green_mask.size
-    yellow_ratio = np.sum(yellow_mask > 0) / yellow_mask.size
-
-    blurred   = cv2.GaussianBlur(gray, (5,5), 0)
-    edges     = cv2.Canny(blurred, 30, 100)
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    spine_count = len([c for c in contours if 10 < cv2.contourArea(c) < 500])
-    texture     = gray.std()
-
-    features = np.array([[black_ratio, green_ratio, yellow_ratio,
-                          spine_count, texture]], dtype=np.float32)
-    del img, hsv, gray, nparr, black_mask, green_mask, yellow_mask, blurred, edges
+    img = cv2.resize(img, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype(np.float32) / 255.0
+    img = np.expand_dims(img, axis=0)
+    image_interpreter.set_tensor(image_input[0]['index'], img)
+    image_interpreter.invoke()
+    result = image_interpreter.get_tensor(image_output[0]['index'])[0][0]
+    p_suk = float(result)
+    p_dib = 1.0 - p_suk
+    print(f"IMAGE RAW: {result}, P(ดิบ)={p_dib:.3f}, P(สุก)={p_suk:.3f}", flush=True)
+    del img, nparr
     gc.collect()
-    return features
-
-def predict_image(img_bytes):
-    features = extract_surface_features(img_bytes)
-    proba    = surface_clf.predict_proba(features)[0]
-    del features
-    gc.collect()
-    return proba
+    return np.array([p_dib, p_suk], dtype=np.float32)
 
 # --- Fusion ---
 
