@@ -25,7 +25,7 @@ app = Flask(__name__)
 MODELS_READY = False
 
 print("Loading TensorFlow Lite model...", flush=True)
-audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model.tflite')
+audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2.tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
