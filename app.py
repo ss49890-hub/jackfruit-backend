@@ -194,15 +194,70 @@ def predict_image_only():
         gc.collect()
         return jsonify({'error': f'ประมวลผลรูปภาพไม่สำเร็จ: {str(e)}'}), 500
 
+def build_context_prompt(context):
+    """
+    แปลง context ผลวิเคราะห์ขนุน (ที่ frontend ส่งมาจาก /predict)
+    ให้เป็นข้อความสรุปสำหรับฝัง system prompt ให้ AI รู้เรื่องอัตโนมัติ
+    """
+    if not context:
+        return None
+
+    result      = context.get('result')
+    confidence  = context.get('confidence')
+    audio_score = context.get('audio_score')
+    image_score = context.get('image_score')
+
+    lines = ["ผลการวิเคราะห์ขนุนล่าสุดของผู้ใช้คนนี้คือ:"]
+    if result is not None:
+        lines.append(f"- ผลสรุป: {result} (ความมั่นใจ {confidence}%)" if confidence is not None else f"- ผลสรุป: {result}")
+    if audio_score:
+        score_text = ", ".join(f"{k} {v}%" for k, v in audio_score.items())
+        lines.append(f"- จากเสียง: {score_text}")
+    if image_score:
+        score_text = ", ".join(f"{k} {v}%" for k, v in image_score.items())
+        lines.append(f"- จากรูปภาพ: {score_text}")
+
+    return "\n".join(lines)
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     if chat_model is None:
         return jsonify({'error': 'Chat AI ยังไม่ได้ตั้งค่าบน server'}), 503
+
     data = request.get_json()
     if not data or 'message' not in data:
         return jsonify({'error': 'ต้องส่ง message'}), 400
+
+    user_message = data['message']
+    context      = data.get('context')        # ผลวิเคราะห์ขนุนล่าสุด (ส่งมาทุกครั้งจาก frontend)
+    history      = data.get('history', [])     # [{role: 'user'|'model', text: '...'}, ...] ของ session นี้
+
     try:
-        response = chat_model.generate_content(data['message'])
+        system_context = build_context_prompt(context)
+
+        system_instruction = (
+            "คุณคือผู้ช่วย AI ในแอปตรวจสุกขนุน (jackiegem-fruit) "
+            "ตอบเป็นภาษาไทย กระชับ เป็นกันเอง และให้ความรู้เกี่ยวกับขนุน "
+            "การเลือกขนุนสุก-ดิบ การเก็บรักษา การปรุงอาหาร และอธิบายผลการวิเคราะห์ของแอปได้ "
+            "ถ้ามีข้อมูลผลวิเคราะห์ล่าสุดของผู้ใช้ ให้ใช้ข้อมูลนั้นตอบคำถามโดยไม่ต้องถามผู้ใช้ซ้ำ"
+        )
+        if system_context:
+            system_instruction += "\n\n" + system_context
+
+        session_model = genai.GenerativeModel(
+            'gemini-2.5-flash',
+            system_instruction=system_instruction
+        )
+
+        # แปลง history (ถ้ามี) ให้เป็น format ที่ genai ต้องการ แล้วเปิด chat session ต่อเนื่อง
+        gemini_history = [
+            {'role': h.get('role', 'user'), 'parts': [h.get('text', '')]}
+            for h in history
+        ]
+        convo = session_model.start_chat(history=gemini_history)
+        response = convo.send_message(user_message)
+
         return jsonify({'reply': response.text})
     except Exception as e:
         print(f"CHAT ERROR: {e}", flush=True)
