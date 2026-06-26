@@ -8,15 +8,16 @@ import tensorflow as tf
 import io
 import os
 import gc
-import google.generativeai as genai
+from openai import OpenAI
 
-GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY')
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    chat_model = genai.GenerativeModel('gemini-2.5-flash')
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY')
+if GROQ_API_KEY:
+    chat_model = OpenAI(api_key=GROQ_API_KEY, base_url="https://api.groq.com/openai/v1")
 else:
     chat_model = None
-    print("WARNING: GEMINI_API_KEY not set", flush=True)
+    print("WARNING: GROQ_API_KEY not set", flush=True)
+
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 app = Flask(__name__)
 
@@ -245,20 +246,23 @@ def chat():
         if system_context:
             system_instruction += "\n\n" + system_context
 
-        session_model = genai.GenerativeModel(
-            'gemini-2.5-flash',
-            system_instruction=system_instruction
+        # แปลง history (ถ้ามี) ให้เป็น format OpenAI-style ['role': 'user'|'assistant', 'content': ...]
+        # frontend ส่ง role เป็น 'user' หรือ 'model' (ตามชื่อเดิมของ Gemini) -> map 'model' เป็น 'assistant'
+        groq_messages = [{'role': 'system', 'content': system_instruction}]
+        for h in history:
+            role = h.get('role', 'user')
+            role = 'assistant' if role == 'model' else role
+            groq_messages.append({'role': role, 'content': h.get('text', '')})
+        groq_messages.append({'role': 'user', 'content': user_message})
+
+        completion = chat_model.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=groq_messages,
+            max_tokens=1024,
         )
+        reply_text = completion.choices[0].message.content
 
-        # แปลง history (ถ้ามี) ให้เป็น format ที่ genai ต้องการ แล้วเปิด chat session ต่อเนื่อง
-        gemini_history = [
-            {'role': h.get('role', 'user'), 'parts': [h.get('text', '')]}
-            for h in history
-        ]
-        convo = session_model.start_chat(history=gemini_history)
-        response = convo.send_message(user_message)
-
-        return jsonify({'reply': response.text})
+        return jsonify({'reply': reply_text})
     except Exception as e:
         print(f"CHAT ERROR: {e}", flush=True)
         return jsonify({'error': f'เกิดข้อผิดพลาด: {str(e)}'}), 500
