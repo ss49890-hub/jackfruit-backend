@@ -25,7 +25,7 @@ MODELS_READY = False
 
 # โหลด audio ตอน startup ปกติ
 print("Loading audio TFLite model...", flush=True)
-audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2 (2).tflite')
+audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2 (1).tflite')
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
