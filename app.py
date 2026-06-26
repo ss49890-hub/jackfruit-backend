@@ -23,7 +23,6 @@ app = Flask(__name__)
 
 MODELS_READY = False
 
-# โหลด audio ตอน startup ปกติ
 print("Loading audio TFLite model...", flush=True)
 audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2 (1).tflite')
 audio_interpreter.allocate_tensors()
@@ -31,7 +30,6 @@ audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
 print("Audio model loaded.", flush=True)
 
-# image model โหลดแบบ lazy (โหลดตอนใช้ครั้งแรกเท่านั้น)
 image_interpreter = None
 image_input = None
 image_output = None
@@ -55,30 +53,22 @@ def load_image_model():
         image_output = image_interpreter.get_output_details()
         print("Image model loaded.", flush=True)
 
-# --- Audio Processing ---
-
 def extract_mfcc(audio_bytes):
     audio_file = io.BytesIO(audio_bytes)
     y, sr = sf.read(audio_file, dtype='float32')
-
     if y.ndim > 1:
         y = y.mean(axis=1)
-
     if sr != SAMPLE_RATE:
         n_samples = int(len(y) * SAMPLE_RATE / sr)
         y = signal.resample(y, n_samples)
-
     max_samples = SAMPLE_RATE * 10
     if len(y) > max_samples:
         y = y[:max_samples]
-
     mfcc = librosa.feature.mfcc(y=y, sr=SAMPLE_RATE, n_mfcc=N_MFCC)
-
     if mfcc.shape[1] < N_FRAMES:
         mfcc = np.pad(mfcc, ((0, 0), (0, N_FRAMES - mfcc.shape[1])))
     else:
         mfcc = mfcc[:, :N_FRAMES]
-
     result = mfcc[np.newaxis, ..., np.newaxis].astype(np.float32)
     del y, mfcc
     gc.collect()
@@ -96,10 +86,8 @@ def predict_audio(audio_bytes):
     gc.collect()
     return np.array([p_dib, p_suk], dtype=np.float32)
 
-# --- Image Processing ---
-
 def predict_image(img_bytes):
-    load_image_model()  # lazy load ตอนใช้ครั้งแรก
+    load_image_model()
     nparr = np.frombuffer(img_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
     if img is None:
@@ -118,9 +106,20 @@ def predict_image(img_bytes):
     gc.collect()
     return np.array([p_dib, p_suk], dtype=np.float32)
 
-# --- Fusion ---
-
 def fuse_predictions(audio_proba, image_proba, audio_weight=0.4, image_weight=0.6):
+    p_suk_audio = float(audio_proba[1])
+    p_suk_image = float(image_proba[1])
+
+    # Rule: ภาพบอกดิบ แต่เสียงบอกสุกพอสมควร → ห่าม
+    if p_suk_image < 0.4 and p_suk_audio > 0.4:
+        confidence = round(50 + abs(p_suk_audio - p_suk_image) * 30, 1)
+        return {
+            'result':      'ขนุนห่าม',
+            'confidence':  confidence,
+            'audio_score': {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(audio_proba)},
+            'image_score': {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(image_proba)},
+        }
+
     combined = (audio_weight * audio_proba) + (image_weight * image_proba)
     pred_idx = int(np.argmax(combined))
     return {
@@ -129,8 +128,6 @@ def fuse_predictions(audio_proba, image_proba, audio_weight=0.4, image_weight=0.
         'audio_score': {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(audio_proba)},
         'image_score': {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(image_proba)},
     }
-
-# --- Routes ---
 
 @app.route('/')
 def index():
@@ -196,18 +193,12 @@ def predict_image_only():
         return jsonify({'error': f'ประมวลผลรูปภาพไม่สำเร็จ: {str(e)}'}), 500
 
 def build_context_prompt(context):
-    """
-    แปลง context ผลวิเคราะห์ขนุน (ที่ frontend ส่งมาจาก /predict)
-    ให้เป็นข้อความสรุปสำหรับฝัง system prompt ให้ AI รู้เรื่องอัตโนมัติ
-    """
     if not context:
         return None
-
     result      = context.get('result')
     confidence  = context.get('confidence')
     audio_score = context.get('audio_score')
     image_score = context.get('image_score')
-
     lines = ["ผลการวิเคราะห์ขนุนล่าสุดของผู้ใช้คนนี้คือ:"]
     if result is not None:
         lines.append(f"- ผลสรุป: {result} (ความมั่นใจ {confidence}%)" if confidence is not None else f"- ผลสรุป: {result}")
@@ -217,26 +208,20 @@ def build_context_prompt(context):
     if image_score:
         score_text = ", ".join(f"{k} {v}%" for k, v in image_score.items())
         lines.append(f"- จากรูปภาพ: {score_text}")
-
     return "\n".join(lines)
-
 
 @app.route('/chat', methods=['POST'])
 def chat():
     if chat_model is None:
         return jsonify({'error': 'Chat AI ยังไม่ได้ตั้งค่าบน server'}), 503
-
     data = request.get_json()
     if not data or 'message' not in data:
         return jsonify({'error': 'ต้องส่ง message'}), 400
-
     user_message = data['message']
-    context      = data.get('context')        # ผลวิเคราะห์ขนุนล่าสุด (ส่งมาทุกครั้งจาก frontend)
-    history      = data.get('history', [])     # [{role: 'user'|'model', text: '...'}, ...] ของ session นี้
-
+    context      = data.get('context')
+    history      = data.get('history', [])
     try:
         system_context = build_context_prompt(context)
-
         system_instruction = (
             "คุณคือผู้ช่วย AI ในแอปตรวจสุกขนุน (jackiegem-fruit) "
             "ตอบเป็นภาษาไทย กระชับ เป็นกันเอง และให้ความรู้เกี่ยวกับขนุน "
@@ -245,23 +230,18 @@ def chat():
         )
         if system_context:
             system_instruction += "\n\n" + system_context
-
-        # แปลง history (ถ้ามี) ให้เป็น format OpenAI-style ['role': 'user'|'assistant', 'content': ...]
-        # frontend ส่ง role เป็น 'user' หรือ 'model' (ตามชื่อเดิมของ Gemini) -> map 'model' เป็น 'assistant'
         groq_messages = [{'role': 'system', 'content': system_instruction}]
         for h in history:
             role = h.get('role', 'user')
             role = 'assistant' if role == 'model' else role
             groq_messages.append({'role': role, 'content': h.get('text', '')})
         groq_messages.append({'role': 'user', 'content': user_message})
-
         completion = chat_model.chat.completions.create(
             model=GROQ_MODEL,
             messages=groq_messages,
             max_tokens=1024,
         )
         reply_text = completion.choices[0].message.content
-
         return jsonify({'reply': reply_text})
     except Exception as e:
         print(f"CHAT ERROR: {e}", flush=True)
