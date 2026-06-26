@@ -120,7 +120,7 @@ def predict_image(img_bytes):
 
 # --- Fusion ---
 
-def fuse_predictions(audio_proba, image_proba, audio_weight=0.6, image_weight=0.4):
+def fuse_predictions(audio_proba, image_proba, audio_weight=0.4, image_weight=0.6):
     combined = (audio_weight * audio_proba) + (image_weight * image_proba)
     pred_idx = int(np.argmax(combined))
     return {
