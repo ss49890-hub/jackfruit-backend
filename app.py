@@ -17,14 +17,24 @@ else:
     chat_model = None
     print("WARNING: GROQ_API_KEY not set", flush=True)
 
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# llama-3.3-70b-versatile ถูก Groq ปลดระวางเมื่อ 16 ส.ค. 2026
+# ตัวแทนที่ Groq แนะนำ: openai/gpt-oss-120b หรือ qwen/qwen3.6-27b
+# ตั้งค่า env var GROQ_MODEL บน Render เพื่อเปลี่ยนโมเดลโดยไม่ต้องแก้โค้ด
+GROQ_MODEL = os.environ.get('GROQ_MODEL', 'openai/gpt-oss-120b')
+print(f"Using Groq model: {GROQ_MODEL}", flush=True)
+
+# จำนวนข้อความย้อนหลังสูงสุดที่ส่งเข้าโมเดล (กัน token บานและตอบช้า)
+MAX_HISTORY = int(os.environ.get('MAX_HISTORY', '10'))
 
 app = Flask(__name__)
 
 MODELS_READY = False
 
+AUDIO_MODEL_PATH = os.environ.get('AUDIO_MODEL_PATH', 'jackfruit_model_v2 (1).tflite')
+IMAGE_MODEL_PATH = os.environ.get('IMAGE_MODEL_PATH', 'jackfruit_image_v2.tflite')
+
 print("Loading audio TFLite model...", flush=True)
-audio_interpreter = tf.lite.Interpreter(model_path='jackfruit_model_v2 (1).tflite')
+audio_interpreter = tf.lite.Interpreter(model_path=AUDIO_MODEL_PATH)
 audio_interpreter.allocate_tensors()
 audio_input  = audio_interpreter.get_input_details()
 audio_output = audio_interpreter.get_output_details()
@@ -43,15 +53,17 @@ SAMPLE_RATE = 22050
 N_MFCC      = 40
 N_FRAMES    = 100
 
+
 def load_image_model():
     global image_interpreter, image_input, image_output
     if image_interpreter is None:
         print("Loading image TFLite model (lazy)...", flush=True)
-        image_interpreter = tf.lite.Interpreter(model_path='jackfruit_image_v2.tflite')
+        image_interpreter = tf.lite.Interpreter(model_path=IMAGE_MODEL_PATH)
         image_interpreter.allocate_tensors()
         image_input  = image_interpreter.get_input_details()
         image_output = image_interpreter.get_output_details()
         print("Image model loaded.", flush=True)
+
 
 def extract_mfcc(audio_bytes):
     audio_file = io.BytesIO(audio_bytes)
@@ -74,6 +86,7 @@ def extract_mfcc(audio_bytes):
     gc.collect()
     return result
 
+
 def predict_audio(audio_bytes):
     mfcc = extract_mfcc(audio_bytes)
     audio_interpreter.set_tensor(audio_input[0]['index'], mfcc)
@@ -85,6 +98,7 @@ def predict_audio(audio_bytes):
     del mfcc
     gc.collect()
     return np.array([p_dib, p_suk], dtype=np.float32)
+
 
 def predict_image(img_bytes):
     load_image_model()
@@ -105,6 +119,7 @@ def predict_image(img_bytes):
     del img, nparr
     gc.collect()
     return np.array([p_dib, p_suk], dtype=np.float32)
+
 
 def fuse_predictions(audio_proba, image_proba, audio_weight=0.4, image_weight=0.6):
     p_suk_audio = float(audio_proba[1])
@@ -129,16 +144,24 @@ def fuse_predictions(audio_proba, image_proba, audio_weight=0.4, image_weight=0.
         'image_score': {CLASSES[i]: round(float(p)*100,1) for i,p in enumerate(image_proba)},
     }
 
+
 @app.route('/')
 def index():
     return jsonify({'status': 'ok', 'message': 'Jackfruit API running'})
 
+
 @app.route('/health')
 def health():
     if MODELS_READY:
-        return jsonify({'status': 'ready', 'models_loaded': True}), 200
+        return jsonify({
+            'status': 'ready',
+            'models_loaded': True,
+            'chat_enabled': chat_model is not None,
+            'chat_model': GROQ_MODEL if chat_model is not None else None,
+        }), 200
     else:
         return jsonify({'status': 'loading', 'models_loaded': False}), 503
+
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -155,6 +178,7 @@ def predict():
         print(f"PREDICT ERROR: {e}", flush=True)
         gc.collect()
         return jsonify({'error': f'ประมวลผลไม่สำเร็จ: {str(e)}'}), 500
+
 
 @app.route('/predict/audio', methods=['POST'])
 def predict_audio_only():
@@ -174,6 +198,7 @@ def predict_audio_only():
         gc.collect()
         return jsonify({'error': f'ประมวลผลเสียงไม่สำเร็จ: {str(e)}'}), 500
 
+
 @app.route('/predict/image', methods=['POST'])
 def predict_image_only():
     if 'image' not in request.files:
@@ -191,6 +216,7 @@ def predict_image_only():
         print(f"IMAGE ERROR: {e}", flush=True)
         gc.collect()
         return jsonify({'error': f'ประมวลผลรูปภาพไม่สำเร็จ: {str(e)}'}), 500
+
 
 def build_context_prompt(context):
     if not context:
@@ -210,16 +236,31 @@ def build_context_prompt(context):
         lines.append(f"- จากรูปภาพ: {score_text}")
     return "\n".join(lines)
 
+
+def friendly_chat_error(e):
+    """แปลง exception จาก Groq เป็นข้อความที่ผู้ใช้อ่านรู้เรื่อง"""
+    msg = str(e).lower()
+    if 'model_not_found' in msg or 'does not exist' in msg or 'decommissioned' in msg:
+        return 'ระบบ AI ขัดข้องชั่วคราว (โมเดลไม่พร้อมใช้งาน) กรุณาแจ้งผู้ดูแลระบบครับ'
+    if 'rate_limit' in msg or '429' in msg:
+        return 'ตอนนี้มีผู้ใช้งานเยอะ รอสักครู่แล้วลองใหม่นะครับ'
+    if 'authentication' in msg or 'api key' in msg or '401' in msg:
+        return 'ระบบ AI ยังไม่ได้ตั้งค่า API key ให้ถูกต้อง กรุณาแจ้งผู้ดูแลระบบครับ'
+    if 'timeout' in msg or 'timed out' in msg:
+        return 'AI ตอบช้าเกินไป ลองถามใหม่อีกครั้งนะครับ'
+    return 'ขออภัยครับ ระบบขัดข้องชั่วคราว ลองใหม่อีกครั้งนะครับ'
+
+
 @app.route('/chat', methods=['POST'])
 def chat():
     if chat_model is None:
         return jsonify({'error': 'Chat AI ยังไม่ได้ตั้งค่าบน server'}), 503
-    data = request.get_json()
-    if not data or 'message' not in data:
+    data = request.get_json(silent=True)
+    if not data or not data.get('message'):
         return jsonify({'error': 'ต้องส่ง message'}), 400
     user_message = data['message']
     context      = data.get('context')
-    history      = data.get('history', [])
+    history      = data.get('history', []) or []
     try:
         system_context = build_context_prompt(context)
         system_instruction = (
@@ -230,22 +271,28 @@ def chat():
         )
         if system_context:
             system_instruction += "\n\n" + system_context
+ 
         groq_messages = [{'role': 'system', 'content': system_instruction}]
-        for h in history:
+        for h in history[-MAX_HISTORY:]:
             role = h.get('role', 'user')
             role = 'assistant' if role == 'model' else role
-            groq_messages.append({'role': role, 'content': h.get('text', '')})
+            text = h.get('text', '')
+            if text:
+                groq_messages.append({'role': role, 'content': text})
         groq_messages.append({'role': 'user', 'content': user_message})
+ 
         completion = chat_model.chat.completions.create(
             model=GROQ_MODEL,
             messages=groq_messages,
             max_tokens=1024,
+            timeout=30,
         )
         reply_text = completion.choices[0].message.content
         return jsonify({'reply': reply_text})
     except Exception as e:
-        print(f"CHAT ERROR: {e}", flush=True)
-        return jsonify({'error': f'เกิดข้อผิดพลาด: {str(e)}'}), 500
-
+        print(f"CHAT ERROR [{GROQ_MODEL}]: {e}", flush=True)
+        return jsonify({'error': friendly_chat_error(e)}), 500
+ 
+ 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=False)
