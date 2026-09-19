@@ -26,7 +26,7 @@ MAX_HISTORY = int(os.environ.get('MAX_HISTORY', '10'))
 app = Flask(__name__)
 MODELS_READY = False
 
-AUDIO_MODEL_PATH = os.environ.get('AUDIO_MODEL_PATH', 'jackfruit_model_v2 (1).tflite')
+AUDIO_MODEL_PATH = os.environ.get('AUDIO_MODEL_PATH', 'jackfruit_model_v2-1.tflite')
 IMAGE_MODEL_PATH = os.environ.get('IMAGE_MODEL_PATH', 'jackfruit_image_v2.tflite')
 RF_MODEL_PATH    = os.environ.get('RF_MODEL_PATH', 'jackfruit_rf_model.pkl')
 
